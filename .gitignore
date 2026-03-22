@@ -1,0 +1,43 @@
+# Dependencies
+node_modules/
+
+# Wrangler
+.wrangler/
+.dist/
+
+# Local development
+*.local
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environment (contains secrets)
+.env
+.env.local
+.env.*.local
+
+# Test files
+temp-*.js
+temp-test.py
+
+# Backup files
+backups/
+
+# Build output
+dist/
+build/
+
+# Ignore specific files in src (if any)
+upload-*.js

@@ -1,0 +1,29 @@
+{
+  "name": "course-sharing-download-worker",
+  "version": "2.0.0",
+  "description": "Cloudflare Worker for downloading course files from R2 storage",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "echo \"No tests specified\" && exit 0"
+  },
+  "keywords": [
+    "cloudflare-worker",
+    "r2",
+    "download",
+    "course-sharing"
+  ],
+  "author": "Course Sharing Team",
+  "license": "MIT",
+  "devDependencies": {
+    "wrangler": "^3.0.0"
+  },
+  "dependencies": {
+    "fflate": "^0.8.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

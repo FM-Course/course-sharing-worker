@@ -1,0 +1,19 @@
+name = "course-sharing-download"
+main = "src/index.js"
+compatibility_date = "2025-03-21"
+
+# R2存储桶绑定
+[[r2_buckets]]
+binding = "COURSE_BUCKET"
+bucket_name = "fm-course-sharing"
+
+# KV命名空间绑定（用于缓存manifest）
+[[kv_namespaces]]
+binding = "MANIFEST_CACHE"
+id = "edf6084971684c74aeabaef6922a768b"
+
+# 环境变量
+[vars]
+DEBUG = "false"
+CACHE_TTL = "300"      # 5分钟内存缓存 TTL
+MAX_CONCURRENT = "5"   # R2 并发下载数
