@@ -5,8 +5,10 @@
   "main": "src/index.js",
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev",
+    "dev": "wrangler dev --persist-to ../.wrangler/state --config wrangler-dev.toml",
     "deploy": "wrangler deploy",
+    "upload": "node upload-manifest.js",
+    "upload:local": "node upload-manifest.js --debug",
     "test": "echo \"No tests specified\" && exit 0"
   },
   "keywords": [
@@ -18,7 +20,7 @@
   "author": "Course Sharing Team",
   "license": "MIT",
   "devDependencies": {
-    "wrangler": "^3.0.0"
+    "wrangler": "4.76.0"
   },
   "dependencies": {
     "fflate": "^0.8.2"

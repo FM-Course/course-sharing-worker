@@ -41,3 +41,4 @@ build/
 
 # Ignore specific files in src (if any)
 upload-*.js
+wrangler-dev.toml
