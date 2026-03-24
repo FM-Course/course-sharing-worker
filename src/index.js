@@ -4,7 +4,7 @@
  * 使用 fflate 库实现 ZIP 打包功能，解决以下问题：
  * 1. P0: 内存爆炸风险 - 使用 fflate 的流式压缩
  * 2. P0: CRC32 校验缺失 - fflate 自动计算正确的 CRC32
- * 3. P1: 多层缓存策略 + TTL
+ * 3. P1: 内存缓存 - Worker 生命周期内持久
  * 4. P1: 并发控制
  * 5. P1: O(1) 路径查找
  * 6. P2: 统一日志工具
@@ -17,8 +17,8 @@ import { zip } from 'fflate';
 // 响应头配置
 const RESPONSE_HEADERS = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type',
+  'Access-Control-Allow-Methods': 'GET, HEAD, POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
   'Content-Type': 'application/json'
 };
 
@@ -49,63 +49,56 @@ function successResponse(data, status = 200) {
 
 // ==================== 缓存管理 ====================
 
-// L1: 内存缓存
+// 内存缓存（Worker 生命周期内持久）
 let memoryCache = null;
-let cacheTimestamp = 0;
-const CACHE_TTL = 5 * 60 * 1000; // 5分钟（可通过环境变量覆盖）
 
-// 从 R2 存储桶获取 manifest.json（多层缓存 + TTL）
+// 默认 GitHub manifest URL
+const DEFAULT_GITHUB_MANIFEST_URL = 'https://raw.githubusercontent.com/FM-Course/course-sharing-web/refs/heads/main/docs/.vitepress/public/manifest.json';
+
+// Token 验证
+function verifyAuth(request, env) {
+  const authHeader = request.headers.get('Authorization');
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return false;
+  }
+  const token = authHeader.substring(7);
+  return token === env.REFRESH_TOKEN;
+}
+
+// 从 GitHub URL 获取 manifest
+async function fetchManifestFromGitHub(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Failed to fetch from GitHub: ${res.status}`);
+  const manifest = await res.json();
+  manifest.fileSet = new Set(Object.keys(manifest.files));
+  return manifest;
+}
+
+// 从 R2 存储桶获取 manifest.json
+async function fetchManifestFromR2(env) {
+  const manifestObject = await env.COURSE_BUCKET.get('manifest.json');
+  if (!manifestObject) throw new Error('manifest.json not found in R2');
+  const manifestText = await manifestObject.text();
+  const manifest = JSON.parse(manifestText);
+  manifest.fileSet = new Set(Object.keys(manifest.files));
+  return manifest;
+}
+
+// 获取 manifest（优先内存，然后 R2）
 async function getManifest(env) {
   const log = createLogger(env);
 
   try {
-    // L1: 内存缓存（带 TTL）
-    if (memoryCache && Date.now() - cacheTimestamp < (env.CACHE_TTL || CACHE_TTL)) {
+    // 内存缓存命中
+    if (memoryCache) {
       log.debug('从内存缓存获取 manifest');
       return memoryCache;
     }
 
-    // L2: KV 缓存
-    try {
-      const kvCache = await env.MANIFEST_CACHE.get('manifest', { type: 'json' });
-      if (kvCache) {
-        log.debug('从 KV 缓存获取 manifest');
-        // 重新构建 fileSet（KV 存储后会丢失 Set 类型）
-        kvCache.fileSet = new Set(Object.keys(kvCache.files));
-        memoryCache = kvCache;
-        cacheTimestamp = Date.now();
-        return kvCache;
-      }
-    } catch (kvError) {
-      log.warn('KV 缓存读取失败:', kvError.message);
-    }
-
-    // L3: R2 源站
+    // 从 R2 获取
     log.debug('从 R2 获取 manifest');
-    const manifestObject = await env.COURSE_BUCKET.get('manifest.json');
-
-    if (!manifestObject) {
-      throw new Error('manifest.json not found in R2');
-    }
-
-    const manifestText = await manifestObject.text();
-    const manifest = JSON.parse(manifestText);
-
-    // 构建文件路径 Set 用于 O(1) 查找
-    manifest.fileSet = new Set(Object.keys(manifest.files));
-
-    // 回填 KV 缓存
-    try {
-      await env.MANIFEST_CACHE.put('manifest', manifestText, {
-        expirationTtl: env.CACHE_TTL || 3600
-      });
-    } catch (kvError) {
-      log.warn('KV 缓存写入失败:', kvError.message);
-    }
-
+    const manifest = await fetchManifestFromR2(env);
     memoryCache = manifest;
-    cacheTimestamp = Date.now();
-
     return manifest;
   } catch (error) {
     log.error('获取 manifest 失败:', error);
@@ -315,8 +308,8 @@ function handleOptions() {
   return new Response(null, {
     headers: {
       'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type',
+      'Access-Control-Allow-Methods': 'GET, HEAD, POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
       'Access-Control-Max-Age': '86400'
     }
   });
@@ -331,12 +324,39 @@ export default {
       return handleOptions();
     }
 
-    // 只支持 GET 请求
+    const url = new URL(request.url);
+
+    // 刷新 manifest 缓存端点（支持 GET/POST）
+    if (url.pathname === '/refresh-manifest') {
+      const log = createLogger(env);
+
+      if (!verifyAuth(request, env)) {
+        return errorResponse('Unauthorized', 401);
+      }
+
+      try {
+        log.debug('刷新 manifest 缓存');
+        const manifest = await fetchManifestFromGitHub(
+          env.MANIFEST_GITHUB_URL || DEFAULT_GITHUB_MANIFEST_URL
+        );
+        memoryCache = manifest;
+        log.debug(`Manifest 更新成功: ${manifest.total_files} 个文件`);
+
+        return successResponse({
+          refreshed: true,
+          fileCount: manifest.total_files,
+          version: manifest.version
+        });
+      } catch (error) {
+        log.error('刷新 manifest 失败:', error);
+        return errorResponse(`刷新失败: ${error.message}`, 500);
+      }
+    }
+
+    // 只支持 GET 请求（除了 /refresh-manifest）
     if (request.method !== 'GET') {
       return errorResponse('只支持 GET 请求', 405);
     }
-
-    const url = new URL(request.url);
 
     // 健康检查端点
     if (url.pathname === '/health') {
@@ -345,7 +365,6 @@ export default {
         timestamp: new Date().toISOString(),
         cache: {
           inMemory: memoryCache !== null,
-          age: memoryCache ? Date.now() - cacheTimestamp : null,
           fileCount: memoryCache ? Object.keys(memoryCache.files).length : 0
         }
       });
@@ -397,11 +416,12 @@ export default {
       service: 'Course Sharing Download Worker (fflate)',
       endpoints: {
         '/health': '健康检查',
+        '/refresh-manifest': '刷新 manifest 缓存（需认证）',
         '/manifest-info': '获取 manifest 信息',
         '/download/<path>': '下载文件或文件夹'
       },
       usage: 'GET /download/<文件路径> 下载单个文件，GET /download/<文件夹路径> 下载文件夹（ZIP）',
-      features: 'fflate ZIP 打包、多层缓存、并发控制、CRC32 自动计算'
+      features: 'fflate ZIP 打包、内存缓存、GitHub 自动刷新、并发控制、CRC32 自动计算'
     });
   }
 };

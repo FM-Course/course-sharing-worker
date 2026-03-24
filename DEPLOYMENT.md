@@ -5,7 +5,7 @@
 这个Cloudflare Worker负责从R2存储桶下载课程文件。它支持：
 1. 单个文件下载（恢复原始文件名）
 2. 文件夹下载（打包为zip格式，使用 fflate 库）
-3. manifest.json 多层缓存（内存 + KV + R2）
+3. manifest.json 内存缓存 + GitHub 自动刷新
 4. 并发控制（R2 下载并发限制）
 5. 正确的 CRC32 校验（fflate 自动计算）
 
@@ -14,7 +14,8 @@
 | 特性 | 说明 |
 |------|------|
 | ZIP 打包 | 使用 fflate 库，自动计算正确 CRC32 |
-| 多层缓存 | L1 内存缓存（5分钟）→ L2 KV 缓存 → L3 R2 |
+| 内存缓存 | Worker 生命周期内持久，无 TTL |
+| GitHub 自动刷新 | 前端 push 后自动更新缓存 |
 | 并发控制 | 默认 5 并发下载，防止 R2 限流 |
 | 路径查找 | O(1) Set 查找，提升大文件量性能 |
 | 中文支持 | 完整 URL 解码，支持中文路径 |
@@ -34,34 +35,11 @@
 - 课程文件（命名格式：`<SHA256>.<扩展名>`）
 - manifest.json文件（由上传脚本生成）
 
-### 3. 创建KV命名空间
-
-```bash
-# 创建用于缓存manifest的KV命名空间
-wrangler kv:namespace create "MANIFEST_CACHE"
-
-# 输出示例：
-# ⛅️ wrangler 3.0.0
-# 🌀 Creating namespace with title "worker-MANIFEST_CACHE"
-# ✨ Success!
-# Add the following to your wrangler.toml:
-# [[kv_namespaces]]
-# binding = "MANIFEST_CACHE"
-# id = "abc123def456ghi789"
-```
-
-记下返回的ID，更新 `wrangler.toml` 文件。
-
-### 4. 更新配置文件
+### 3. 更新配置文件
 
 编辑 `wrangler.toml`：
 
 ```toml
-# 更新KV命名空间ID
-[[kv_namespaces]]
-binding = "MANIFEST_CACHE"
-id = "你的KV命名空间ID"  # ← 替换这里
-
 # 更新路由（使用你的域名）
 routes = [
   { pattern = "download.your-domain.com/*", zone_name = "your-domain.com" }
@@ -70,9 +48,20 @@ routes = [
 # 环境变量
 [vars]
 DEBUG = "false"           # 开启调试日志（生产环境设为 false）
-CACHE_TTL = "300"         # 内存缓存 TTL（秒），默认 300
 MAX_CONCURRENT = "5"      # R2 并发下载数
+REFRESH_TOKEN = ""        # 刷新 manifest 缓存的认证 token（部署后在 Cloudflare Dashboard 设置）
+MANIFEST_GITHUB_URL = "https://raw.githubusercontent.com/FM-Course/course-sharing-web/refs/heads/main/docs/.vitepress/public/manifest.json"
 ```
+
+### 4. 配置刷新 Token（重要！）
+
+1. 生成一个随机 Token（建议使用强密码生成器）
+2. 在 Cloudflare Dashboard → Workers & Pages → Settings → Variables 中设置：
+   - `REFRESH_TOKEN`: 你的随机 Token
+   - `MANIFEST_GITHUB_URL`: GitHub raw 链接（可选，有默认值）
+3. 在前端仓库的 GitHub Secrets 中设置：
+   - `REFRESH_TOKEN`: 相同的随机 Token
+   - `WORKER_URL`: Worker 的完整 URL（如 `https://course-sharing-download.your-account.workers.dev`）
 
 ### 5. 安装依赖
 
@@ -81,7 +70,34 @@ cd /home/jinsui/CourseSharing/worker
 npm install
 ```
 
-### 6. 测试本地开发
+### 6. 配置 GitHub Actions
+
+在前端仓库添加工作流（已在 `frontend/.github/workflows/refresh-manifest.yml`）：
+
+```yaml
+name: Refresh Manifest Cache
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/.vitepress/public/manifest.json'
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Worker refresh
+        env:
+          WORKER_URL: ${{ secrets.WORKER_URL }}
+          REFRESH_TOKEN: ${{ secrets.REFRESH_TOKEN }}
+        run: |
+          curl -X POST \
+            -H "Authorization: Bearer $REFRESH_TOKEN" \
+            "$WORKER_URL/refresh-manifest"
+```
+
+### 7. 测试本地开发
 
 ```bash
 # 启动本地开发服务器
@@ -91,7 +107,7 @@ npm run dev
 node test-download.js
 ```
 
-### 7. 部署到生产环境
+### 8. 部署到生产环境
 
 ```bash
 # 部署Worker
@@ -103,7 +119,7 @@ npm run deploy
 # https://course-sharing-download.your-account.workers.dev
 ```
 
-### 8. 配置自定义域名（可选）
+### 9. 配置自定义域名（可选）
 
 ```bash
 # 添加自定义域名
@@ -231,6 +247,15 @@ wrangler tail --format pretty --since 1h
 
 访问：`https://download.your-domain.com/manifest-info`
 
+### 手动刷新缓存
+
+```bash
+# 使用 curl 手动刷新（需要正确的 Token）
+curl -X POST \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  https://download.your-domain.com/refresh-manifest
+```
+
 ## 故障排除
 
 ### 常见问题
@@ -242,7 +267,7 @@ wrangler tail --format pretty --since 1h
 
 2. **下载Worker返回错误**
    - 查看Worker日志：`wrangler tail`
-   - 检查KV命名空间配置
+   - 检查R2存储桶绑定
    - 检查R2存储桶绑定
 
 3. **CORS错误**
@@ -250,7 +275,7 @@ wrangler tail --format pretty --since 1h
    - 检查响应头是否正确设置
 
 4. **性能问题**
-   - 增加KV缓存时间（修改CACHE_TTL）
+   - 重新部署 Worker 以刷新内存缓存
    - 考虑使用Cloudflare CDN缓存
    - 优化manifest.json大小
 
@@ -289,8 +314,8 @@ wrangler tail --format pretty --since 1h
    - 大文件建议分块下载
 
 4. **缓存策略**：
-   - manifest.json缓存1小时
-   - 可根据需要调整缓存时间
+   - manifest.json 使用内存缓存（Worker 生命周期内持久）
+   - 重新部署 Worker 会刷新缓存
 
 ## 更新和维护
 
@@ -310,6 +335,8 @@ cd /home/jinsui/CourseSharing/update
 npm run upload-manifest
 ```
 
+**自动刷新机制**：前端仓库 push manifest.json 到 main 分支后，GitHub Actions 会自动调用 Worker 的 `/refresh-manifest` 端点更新内存缓存，无需重新部署 Worker。
+
 ### 清理旧文件
 
 定期清理R2中的旧文件（通过哈希去重，通常不需要手动清理）。
@@ -319,7 +346,7 @@ npm run upload-manifest
 1. **CDN缓存**：配置Cloudflare CDN缓存静态文件
 2. **ZIP 压缩级别**：当前使用 `level: 0`（不压缩），如需压缩可改为 `level: 6`
 3. **并发数调整**：根据 R2 配额调整 `MAX_CONCURRENT`
-4. **缓存 TTL**：根据 manifest 更新频率调整 `CACHE_TTL`
+4. **内存缓存**：Worker 重启时自动刷新
 5. **监控**：使用Cloudflare Analytics监控使用情况
 
 ## 联系和支持
