@@ -11,5 +11,15 @@ bucket_name = "fm-course-sharing"
 [vars]
 DEBUG = "false"
 MAX_CONCURRENT = "5"   # R2 并发下载数
-REFRESH_TOKEN = ""     # 刷新 manifest 缓存的认证 token（部署后在 Cloudflare Dashboard 设置）
+# REFRESH_TOKEN = ""     # 刷新 manifest 缓存的认证 token（部署后在 Cloudflare Dashboard 设置）
 MANIFEST_GITHUB_URL = "https://raw.githubusercontent.com/FM-Course/course-sharing-web/refs/heads/main/docs/.vitepress/public/manifest.json"
+
+[observability]
+enabled = true  # 总开关，新 Worker 默认开启
+
+# 日志（Logs）配置
+[observability.logs]
+enabled = true
+head_sampling_rate = 1  # 采样率：0-1，1 表示 100% 记录
+persist = true  # 是否在 Cloudflare 仪表板存储日志
+
