@@ -143,6 +143,23 @@ function findFilesInFolder(manifest, folderPath) {
   return files;
 }
 
+// ==================== 路径层级检测 ====================
+
+function getPathDepth(path) {
+  const parts = path.split('/').filter(Boolean);
+  return parts.length;
+}
+
+function isEntireCourse(path) {
+  const parts = path.split('/').filter(Boolean);
+  return parts.length === 1;
+}
+
+function isFirstLevelFolder(path) {
+  const parts = path.split('/').filter(Boolean);
+  return parts.length === 2;
+}
+
 // ==================== 下载功能 ====================
 
 // 下载单个文件
@@ -250,6 +267,33 @@ async function downloadFolderWithFflate(env, folderPath, files) {
   });
 }
 
+// 下载预打包的 ZIP
+async function downloadPrepackedZip(env, manifest, prepackedInfo, folderPath) {
+  const log = createLogger(env);
+  const { zipKey, size } = prepackedInfo;
+
+  log.debug(`下载预打包 ZIP: ${folderPath} -> ${zipKey}`);
+
+  const object = await env.COURSE_BUCKET.get(zipKey);
+  if (!object) {
+    log.warn(`预打包 ZIP 不存在，回退到实时打包: ${zipKey}`);
+    const files = findFilesInFolder(manifest, folderPath);
+    return await downloadFolderWithFflate(env, folderPath, files);
+  }
+
+  const data = await object.arrayBuffer();
+  const folderName = folderPath.split('/').pop() || 'folder';
+
+  return new Response(data, {
+    headers: {
+      'Content-Type': 'application/zip',
+      'Content-Disposition': `attachment; filename="${encodeURIComponent(folderName)}.zip"`,
+      'Content-Length': size.toString(),
+      'Access-Control-Allow-Origin': '*'
+    }
+  });
+}
+
 // ==================== 请求处理 ====================
 
 // 处理下载请求
@@ -288,13 +332,23 @@ async function handleDownload(request, env) {
 
       return await downloadFile(env, fileInfo);
     } else {
-      // 下载文件夹
+      // 文件夹下载：三级策略
+      if (isEntireCourse(requestPath)) {
+        // 情况1: 整个课程 → 拒绝
+        return errorResponse('不支持下载整个课程，请下载子文件夹', 403);
+      } else if (isFirstLevelFolder(requestPath)) {
+        // 情况2: 一级子文件夹 → 检查预打包
+        const prepackedInfo = manifest.prepackages?.[requestPath];
+        if (prepackedInfo) {
+          return await downloadPrepackedZip(env, manifest, prepackedInfo, requestPath);
+        }
+      }
+      // 情况3: 二级及更深文件夹，或没有预打包 → 实时打包
       const files = findFilesInFolder(manifest, requestPath);
       if (files.length === 0) {
         return errorResponse('文件夹不存在或为空', 404);
       }
 
-      // 使用 fflate 打包
       return await downloadFolderWithFflate(env, requestPath, files);
     }
   } catch (error) {
