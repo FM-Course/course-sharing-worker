@@ -175,14 +175,14 @@ async function downloadFile(env, fileInfo) {
     throw new Error(`File not found in R2: ${r2Key}`);
   }
 
-  const data = await object.arrayBuffer();
   const filename = originalPath.split('/').pop();
 
-  return new Response(data, {
+  // 直接使用 object.body 作为流式响应，避免将整个文件加载到内存
+  return new Response(object.body, {
     headers: {
       'Content-Type': object.httpMetadata?.contentType || 'application/octet-stream',
       'Content-Disposition': `attachment; filename="${encodeURIComponent(filename)}"`,
-      'Content-Length': data.byteLength.toString(),
+      'Content-Length': object.size.toString(),
       'Access-Control-Allow-Origin': '*'
     }
   });
@@ -281,10 +281,10 @@ async function downloadPrepackedZip(env, manifest, prepackedInfo, folderPath) {
     return await downloadFolderWithFflate(env, folderPath, files);
   }
 
-  const data = await object.arrayBuffer();
   const folderName = folderPath.split('/').pop() || 'folder';
 
-  return new Response(data, {
+  // 直接使用 object.body 作为流式响应，避免将整个文件加载到内存
+  return new Response(object.body, {
     headers: {
       'Content-Type': 'application/zip',
       'Content-Disposition': `attachment; filename="${encodeURIComponent(folderName)}.zip"`,
@@ -315,6 +315,9 @@ async function handleDownload(request, env) {
   } catch {
     log.warn('URL 解码失败，使用原始路径');
   }
+
+  // 去除末尾的斜杠，确保路径匹配一致
+  requestPath = requestPath.replace(/\/$/, '');
 
   try {
     // 获取 manifest（使用多层缓存）
