@@ -84,6 +84,18 @@ async function fetchManifestFromR2(env) {
   return manifest;
 }
 
+// 将 manifest 写入 R2 存储桶
+async function writeManifestToR2(env, manifest) {
+  const manifestCopy = { ...manifest };
+  delete manifestCopy.fileSet;
+  const manifestJson = JSON.stringify(manifestCopy, null, 2);
+  await env.COURSE_BUCKET.put('manifest.json', manifestJson, {
+    httpMetadata: {
+      contentType: 'application/json'
+    }
+  });
+}
+
 // 获取 manifest（优先内存，然后 R2）
 async function getManifest(env) {
   const log = createLogger(env);
@@ -397,7 +409,10 @@ export default {
           env.MANIFEST_GITHUB_URL || DEFAULT_GITHUB_MANIFEST_URL
         );
         memoryCache = manifest;
-        log.debug(`Manifest 更新成功: ${manifest.total_files} 个文件`);
+
+        // 将 manifest 写入 R2 存储桶
+        await writeManifestToR2(env, manifest);
+        log.debug(`Manifest 更新成功: ${manifest.total_files} 个文件，已写入 R2`);
 
         return successResponse({
           refreshed: true,
@@ -425,28 +440,6 @@ export default {
           fileCount: memoryCache ? Object.keys(memoryCache.files).length : 0
         }
       });
-    }
-
-    // 测试端点：直接下载测试文件
-    if (url.pathname === '/test-download') {
-      try {
-        const object = await env.COURSE_BUCKET.get('test-download.txt');
-        if (!object) {
-          return errorResponse('测试文件未找到', 404);
-        }
-
-        const data = await object.arrayBuffer();
-        return new Response(data, {
-          headers: {
-            'Content-Type': 'text/plain',
-            'Content-Disposition': 'attachment; filename="test-download.txt"',
-            'Content-Length': data.byteLength.toString(),
-            'Access-Control-Allow-Origin': '*'
-          }
-        });
-      } catch (error) {
-        return errorResponse(`测试下载失败: ${error.message}`, 500);
-      }
     }
 
     // 获取 manifest 信息端点
