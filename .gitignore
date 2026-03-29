@@ -45,4 +45,4 @@ package-lock.json
 # Ignore specific files in src (if any)
 upload-*.js
 wrangler-dev.toml
-DEPOLYMENT.md
+DEPLOYMENT.md
